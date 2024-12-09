@@ -7,15 +7,14 @@ from apikey import api_key
 import json
 import io
 
-# Initialize AzureOpenAI client
 def initialize_openai_client(api_key):
     client = AzureOpenAI(
-        azure_endpoint="https://nw-tech-dev.openai.azure.com/",
+        azure_endpoint="https://nw-tech-wu.openai.azure.com/",
         api_key=api_key,
-        api_version="2024-08-01-preview"
+        api_version="2024-02-01"
     )
     return client
-
+    
 # Function to summarize the persona
 def summarize_persona(client, role, persona_of_job, keywords, percentages):
     # Combine keywords with their percentages
