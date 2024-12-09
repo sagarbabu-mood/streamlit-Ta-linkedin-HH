@@ -10,9 +10,9 @@ import io
 # Initialize AzureOpenAI client
 def initialize_openai_client(api_key):
     client = AzureOpenAI(
-        azure_endpoint="https://nw-tech-wu.openai.azure.com/",
+        azure_endpoint="https://nw-tech-dev.openai.azure.com/",
         api_key=api_key,
-        api_version="2024-02-01"
+        api_version="2024-08-01-preview"
     )
     return client
 
