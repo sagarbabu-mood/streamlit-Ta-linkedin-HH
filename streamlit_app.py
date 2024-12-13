@@ -7,6 +7,7 @@ from apikey import api_key
 import json
 import io
 
+# Initialize AzureOpenAI client
 def initialize_openai_client(api_key):
     client = AzureOpenAI(
         azure_endpoint="https://nw-tech-wu.openai.azure.com/",
@@ -14,7 +15,7 @@ def initialize_openai_client(api_key):
         api_version="2024-02-01"
     )
     return client
-    
+
 # Function to summarize the persona
 def summarize_persona(client, role, persona_of_job, keywords, percentages):
     # Combine keywords with their percentages
@@ -83,7 +84,8 @@ def summarize_candidate(client, role, candidate_profile, summary_of_persona):
     5. Candidate's headline or professional summary (if available).
     
     Additionally, please calculate the percentage of matching skills based on the following criteria:
-    - 100% for skills from the Keywords list
+    - Calculate the percentage for each keyword list based on the provided percentages.
+    - Sum the percentages for all matched keywords across the lists.
     
     Also, return the following data in an object format: you must follow this format
     {{
@@ -117,11 +119,24 @@ def process_csv(client, role, summary_of_persona, df, keywords):
     if 'Profile Health' not in df.columns:
         df['Profile Health'] = None
     
+    # Initialize progress bar
+    progress_bar = st.progress(0)
+
+    processing_message = st.empty()
+    
+    
     for index, row in df.iterrows():
         candidate_profile = {col: row[col] for col in df.columns if col not in ['Profile Categorization', 'Profile Health']}
         summary, profile_health = summarize_candidate(client, role, candidate_profile, summary_of_persona)
         df.at[index, 'Profile Categorization'] = summary
         df.at[index, 'Profile Health'] = profile_health
+        
+        # Update progress bar
+        progress = (index + 1) / len(df)  # Calculate progress
+        progress_bar.progress(progress)  # Update progress bar
+        
+        # Update only the processing message
+        processing_message.write(f"Processing {index + 1}/{len(df)}...")  # Display current processing status
     
     return df
 
@@ -206,7 +221,7 @@ Language: English, Hindi"""
                 You are a Talent Acquisition Specialist with extensive experience in headhunting and job description analysis. 
                 Your role includes reviewing and matching candidates to job personas. You are tasked with:
                 1. Validating whether a candidate’s degree aligns with the specified year range (2022, 2023, 2024) in the job persona.
-                2. Identifying and matching keywords strictly from the provided TEACHING_LIST & DSA_LIST against a candidate’s profile and education/skills.
+                2. Identifying and matching keywords strictly from the provided keywords against a candidate’s profile and education/skills.
                 3. Ensuring that only valid keywords and qualifications that meet the job persona’s requirements are considered in the summary.
                 """
                 
