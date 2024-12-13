@@ -220,7 +220,7 @@ Language: English, Hindi"""
                 role = """
                 You are a Talent Acquisition Specialist with extensive experience in headhunting and job description analysis. 
                 Your role includes reviewing and matching candidates to job personas. You are tasked with:
-                1. Validating whether a candidate’s degree aligns with the specified year range (2022, 2023, 2024) in the job persona.
+                1. Validating whether a candidate’s degree aligns with the specified year range in the job persona. If not mentioned, ignore it.
                 2. Identifying and matching keywords strictly from the provided keywords against a candidate’s profile and education/skills.
                 3. Ensuring that only valid keywords and qualifications that meet the job persona’s requirements are considered in the summary.
                 """
