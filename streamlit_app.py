@@ -1,24 +1,34 @@
-# streamlit_app.py
-
 import streamlit as st
-from openai import AzureOpenAI
 import pandas as pd
-from apikey import api_key
 import json
 import io
+import time
+import random
+from openai import AzureOpenAI
+# Removed direct API key import for security
+from apikey import api_key  # Ensure your API key is securely imported
+from concurrent.futures import ThreadPoolExecutor
+import logging
+
+# Configure logging
+logging.basicConfig(filename='app.log', level=logging.ERROR)
 
 # Initialize AzureOpenAI client
 def initialize_openai_client(api_key):
-    client = AzureOpenAI(
-        azure_endpoint="https://nw-tech-wu.openai.azure.com/",
-        api_key=api_key,
-        api_version="2024-02-01"
-    )
-    return client
+    try:
+        client = AzureOpenAI(
+            azure_endpoint="https://nw-tech-wu.openai.azure.com/",
+            api_key=api_key,
+            api_version="2024-02-01"
+        )
+        return client
+    except Exception as e:
+        st.error(f"Error initializing OpenAI client: {e}")
+        logging.error(f"Error initializing OpenAI client: {e}")
+        st.stop()
 
 # Function to summarize the persona
 def summarize_persona(client, role, persona_of_job, keywords, percentages):
-    # Combine keywords with their percentages
     keyword_sections = []
     for idx, keyword_list in enumerate(keywords):
         keyword_str = ', '.join(keyword_list)
@@ -48,13 +58,17 @@ def summarize_persona(client, role, persona_of_job, keywords, percentages):
     
     messages = [{"role": "system", "content": summarize_persona_prompt}]
     
-    response = client.chat.completions.create(
-        model="gpt-4o",  # Replace with your deployment name in Azure
-        messages=messages
-    )
-    
-    summary_of_persona = response.choices[0].message.content
-    return summary_of_persona
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",  # Replace with your deployment name in Azure
+            messages=messages
+        )
+        summary_of_persona = response.choices[0].message.content
+        return summary_of_persona
+    except Exception as e:
+        st.error(f"Error summarizing persona: {e}")
+        logging.error(f"Error summarizing persona: {e}")
+        return ""
 
 # Function to extract profile health
 def extract_profile_health(summary_content):
@@ -68,7 +82,7 @@ def extract_profile_health(summary_content):
         return "Unknown"
 
 # Function to summarize candidate
-def summarize_candidate(client, role, candidate_profile, summary_of_persona):
+def summarize_candidate(client, role, candidate_profile, summary_of_persona, max_retries=3):
     summarize_candidate_profile = f"""
     {role}
     Please summarize the following candidate profile:
@@ -102,17 +116,28 @@ def summarize_candidate(client, role, candidate_profile, summary_of_persona):
     
     messages = [{"role": "system", "content": summarize_candidate_profile}]
     
-    response = client.chat.completions.create(
-        model="gpt-4o",  # Replace with your deployment name in Azure
-        messages=messages
-    )
-    
-    summary_content = response.choices[0].message.content
-    profile_health = extract_profile_health(summary_content)
-    
-    return summary_content, profile_health
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",  # Replace with your deployment name in Azure
+                messages=messages
+            )
+            summary_content = response.choices[0].message.content
+            profile_health = extract_profile_health(summary_content)
+            return summary_content, profile_health
+        except Exception as e:
+            st.error(f"Error processing candidate: {e}")
+            logging.error(f"Error processing candidate: {e}")
+            if attempt < max_retries - 1:
+                sleep_time = 2 ** attempt + random.random()
+                st.info(f"Retrying in {sleep_time:.2f} seconds...")
+                time.sleep(sleep_time)
+            else:
+                st.error("Max retries reached. Skipping this candidate.")
+                return "Error", "Unknown"
 
-def process_csv_in_batches(client, role, summary_of_persona, df, keywords, batch_size=50):
+# Function to process CSV in batches
+def process_csv_in_batches(client, role, summary_of_persona, df, keywords, percentages, batch_size=20):
     if 'Profile Categorization' not in df.columns:
         df['Profile Categorization'] = None
     if 'Profile Health' not in df.columns:
@@ -139,12 +164,12 @@ def process_csv_in_batches(client, role, summary_of_persona, df, keywords, batch
             summary, profile_health = summarize_candidate(client, role, candidate_profile, summary_of_persona)
             batch_processed_data.at[index, 'Profile Categorization'] = summary
             batch_processed_data.at[index, 'Profile Health'] = profile_health
-            
-            # Update progress bar
-            progress = (index + 1) / total_rows
-            progress_bar.progress(progress)
         
         processed_batches.append(batch_processed_data)
+        
+        # Update progress bar after each batch
+        progress = (batch_num + 1) / num_batches
+        progress_bar.progress(progress)
         
         # Update batch processing info
         batch_info.write(f"Processed Batch {batch_num + 1}/{num_batches} ({batch_start + 1}-{batch_end})")
@@ -154,18 +179,12 @@ def process_csv_in_batches(client, role, summary_of_persona, df, keywords, batch
     
     return processed_batches, all_processed_data
 
+# Streamlit UI
 def main():
     st.title("Talent Acquisition & Candidate Profiling Tool")
     
     st.sidebar.header("Configuration")
-    
-    # API Key Input
-    api_key = "fce9b34907b848a6902e5c37ddfc8512"  # Ensure this is securely managed in production
-    
-    if not api_key:
-        st.warning("Please enter your Azure OpenAI API key to proceed.")
-        st.stop()
-    
+        
     client = initialize_openai_client(api_key)
     
     st.header("Job Persona Configuration")
@@ -201,7 +220,7 @@ Language: English, Hindi"""
                 value=', '.join(st.session_state.keywords[i]),
                 key=f"keywords_{i+1}"
             )
-            st.session_state.keywords[i] = [kw.strip() for kw in keywords_input.split(',')]
+            st.session_state.keywords[i] = [kw.strip() for kw in keywords_input.split(',') if kw.strip()]
             percentage_input = st.number_input(
                 f"Percentage for List {i+1}",
                 min_value=0, max_value=100,
@@ -219,9 +238,13 @@ Language: English, Hindi"""
     uploaded_file = st.file_uploader("Upload Candidate Profiles", type=["csv"])
     
     if uploaded_file is not None:
-        df = pd.read_csv(uploaded_file)
-        st.write("Uploaded file:")
-        st.dataframe(df.head())
+        try:
+            df = pd.read_csv(uploaded_file)
+            st.write("Uploaded file:")
+            st.dataframe(df.head())
+        except Exception as e:
+            st.error(f"Error reading the CSV file: {e}")
+            st.stop()
         
         # Initialize session state for processing
         if 'processed_batches' not in st.session_state:
@@ -235,13 +258,37 @@ Language: English, Hindi"""
         if st.button("Start Processing") and not st.session_state.processing:
             st.session_state.processing = True
             with st.spinner("Processing..."):
-                summary_of_persona = summarize_persona(client, "Job Title", persona_of_job, st.session_state.keywords, st.session_state.percentages)
-                processed_batches, all_processed_data = process_csv_in_batches(client, "Job Title", summary_of_persona, df, st.session_state.keywords)
-                
-                # Store in session state
-                st.session_state.processed_batches = processed_batches
-                st.session_state.all_processed_data = all_processed_data
-            st.session_state.processing = False
+                try:
+                    summary_of_persona = summarize_persona(
+                        client, 
+                        "Job Title", 
+                        persona_of_job, 
+                        st.session_state.keywords, 
+                        st.session_state.percentages
+                    )
+                    
+                    if not summary_of_persona:
+                        st.error("Failed to summarize persona. Please check your inputs and API key.")
+                        st.session_state.processing = False
+                        st.stop()
+                    
+                    processed_batches, all_processed_data = process_csv_in_batches(
+                        client, 
+                        "Job Title", 
+                        summary_of_persona, 
+                        df, 
+                        st.session_state.keywords, 
+                        st.session_state.percentages, 
+                        batch_size=20  # Reduced batch size for better performance
+                    )
+                    
+                    # Store in session state
+                    st.session_state.processed_batches = processed_batches
+                    st.session_state.all_processed_data = all_processed_data
+                except Exception as e:
+                    st.error(f"An error occurred during processing: {e}")
+                finally:
+                    st.session_state.processing = False
             st.success("Processing Completed!")
         
         # Display download buttons if processed_batches exist
@@ -249,7 +296,11 @@ Language: English, Hindi"""
             st.header("Download Processed Batches")
             for i, batch in enumerate(st.session_state.processed_batches):
                 to_write = io.BytesIO()
-                batch.to_csv(to_write, index=False)
+                try:
+                    batch.to_csv(to_write, index=False)
+                except Exception as e:
+                    st.error(f"Error converting batch {i+1} to CSV: {e}")
+                    continue
                 to_write.seek(0)
                 st.download_button(
                     label=f"Download Batch {i + 1}",
@@ -260,7 +311,10 @@ Language: English, Hindi"""
             
             # Provide a download button for all data
             to_write_all = io.BytesIO()
-            st.session_state.all_processed_data.to_csv(to_write_all, index=False)
+            try:
+                st.session_state.all_processed_data.to_csv(to_write_all, index=False)
+            except Exception as e:
+                st.error(f"Error converting all processed data to CSV: {e}")
             to_write_all.seek(0)
             st.download_button(
                 label="Download All Processed Profiles",
@@ -268,6 +322,12 @@ Language: English, Hindi"""
                 file_name="processed_candidates_all.csv",
                 mime="text/csv"
             )
+        
+        # Optional: Add a button to clear cache if needed
+        if st.button("Clear Cache"):
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.success("Cache cleared!")
 
 if __name__ == "__main__":
     main()
