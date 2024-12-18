@@ -112,42 +112,55 @@ def summarize_candidate(client, role, candidate_profile, summary_of_persona):
     
     return summary_content, profile_health
 
-# Function to process CSV
-def process_csv(client, role, summary_of_persona, df, keywords):
+def process_csv_in_batches(client, role, summary_of_persona, df, keywords, batch_size=50):
     if 'Profile Categorization' not in df.columns:
         df['Profile Categorization'] = None
     if 'Profile Health' not in df.columns:
         df['Profile Health'] = None
     
-    # Initialize progress bar
+    total_rows = len(df)
+    num_batches = (total_rows // batch_size) + (1 if total_rows % batch_size > 0 else 0)
+    
+    # Initialize progress bar and batch info display
     progress_bar = st.progress(0)
+    batch_info = st.empty()
 
-    processing_message = st.empty()
-    
-    
-    for index, row in df.iterrows():
-        candidate_profile = {col: row[col] for col in df.columns if col not in ['Profile Categorization', 'Profile Health']}
-        summary, profile_health = summarize_candidate(client, role, candidate_profile, summary_of_persona)
-        df.at[index, 'Profile Categorization'] = summary
-        df.at[index, 'Profile Health'] = profile_health
-        
-        # Update progress bar
-        progress = (index + 1) / len(df)  # Calculate progress
-        progress_bar.progress(progress)  # Update progress bar
-        
-        # Update only the processing message
-        processing_message.write(f"Processing {index + 1}/{len(df)}...")  # Display current processing status
-    
-    return df
+    processed_batches = []
 
-# Streamlit UI
+    for batch_num in range(num_batches):
+        batch_start = batch_num * batch_size
+        batch_end = min((batch_num + 1) * batch_size, total_rows)
+        
+        batch_data = df.iloc[batch_start:batch_end]
+        batch_processed_data = batch_data.copy()
+
+        for index, row in batch_data.iterrows():
+            candidate_profile = {col: row[col] for col in batch_data.columns if col not in ['Profile Categorization', 'Profile Health']}
+            summary, profile_health = summarize_candidate(client, role, candidate_profile, summary_of_persona)
+            batch_processed_data.at[index, 'Profile Categorization'] = summary
+            batch_processed_data.at[index, 'Profile Health'] = profile_health
+            
+            # Update progress bar
+            progress = (index + 1) / total_rows
+            progress_bar.progress(progress)
+        
+        processed_batches.append(batch_processed_data)
+        
+        # Update batch processing info
+        batch_info.write(f"Processed Batch {batch_num + 1}/{num_batches} ({batch_start + 1}-{batch_end})")
+    
+    # Concatenate all processed data
+    all_processed_data = pd.concat(processed_batches)
+    
+    return processed_batches, all_processed_data
+
 def main():
     st.title("Talent Acquisition & Candidate Profiling Tool")
     
     st.sidebar.header("Configuration")
     
     # API Key Input
-    api_key = "fce9b34907b848a6902e5c37ddfc8512"
+    api_key = "fce9b34907b848a6902e5c37ddfc8512"  # Ensure this is securely managed in production
     
     if not api_key:
         st.warning("Please enter your Azure OpenAI API key to proceed.")
@@ -161,9 +174,9 @@ def main():
     persona_of_job = st.text_area(
         "Job Persona",
         value="""Exp: 8-15 yrs
-Location: Any where in India
+Location: Anywhere in India
 Team handle size: 150 +
-Edutech exp: Atleast 4 yrs
+Edutech exp: At least 4 yrs
 Language: English, Hindi"""
     )
     
@@ -185,68 +198,76 @@ Language: English, Hindi"""
         with st.expander(f"Keyword List {i+1}"):
             keywords_input = st.text_area(
                 f"Keywords for List {i+1} (comma separated)",
-                value=','.join(st.session_state.keywords[i]),
-                key=f'keywords_{i}'
+                value=', '.join(st.session_state.keywords[i]),
+                key=f"keywords_{i+1}"
             )
-            st.session_state.keywords[i] = [kw.strip() for kw in keywords_input.split(',') if kw.strip()]
-            percentage = st.number_input(
+            st.session_state.keywords[i] = [kw.strip() for kw in keywords_input.split(',')]
+            percentage_input = st.number_input(
                 f"Percentage for List {i+1}",
-                min_value=0,
-                max_value=100,
+                min_value=0, max_value=100,
                 value=st.session_state.percentages[i],
                 step=1,
-                key=f'percentages_{i}'
+                key=f"percentage_{i+1}"
             )
-            st.session_state.percentages[i] = percentage
+            st.session_state.percentages[i] = percentage_input
     
-    if st.button("Add Another Keyword List"):
+    # Button to add new keyword list
+    if st.button("Add Keyword List"):
         add_keyword_list()
     
-    st.subheader("Upload Candidate Profiles CSV")
-    uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+    # Process File Upload
+    uploaded_file = st.file_uploader("Upload Candidate Profiles", type=["csv"])
     
-    if uploaded_file:
+    if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
-        st.write("Uploaded CSV Preview:")
+        st.write("Uploaded file:")
         st.dataframe(df.head())
         
-        if st.button("Process Profiles"):
+        # Initialize session state for processing
+        if 'processed_batches' not in st.session_state:
+            st.session_state.processed_batches = []
+        if 'all_processed_data' not in st.session_state:
+            st.session_state.all_processed_data = pd.DataFrame()
+        if 'processing' not in st.session_state:
+            st.session_state.processing = False
+        
+        # Start processing
+        if st.button("Start Processing") and not st.session_state.processing:
+            st.session_state.processing = True
             with st.spinner("Processing..."):
-                # Prepare keywords and percentages
-                keywords = st.session_state.keywords
-                percentages = st.session_state.percentages
+                summary_of_persona = summarize_persona(client, "Job Title", persona_of_job, st.session_state.keywords, st.session_state.percentages)
+                processed_batches, all_processed_data = process_csv_in_batches(client, "Job Title", summary_of_persona, df, st.session_state.keywords)
                 
-                # Define role
-                role = """
-                You are a Talent Acquisition Specialist with extensive experience in headhunting and job description analysis. 
-                Your role includes reviewing and matching candidates to job personas. You are tasked with:
-                1. Validating whether a candidate’s degree aligns with the specified year range in the job persona. If not mentioned, ignore it.
-                2. Identifying and matching keywords strictly from the provided keywords against a candidate’s profile and education/skills.
-                3. Ensuring that only valid keywords and qualifications that meet the job persona’s requirements are considered in the summary.
-                """
-                
-                # Summarize persona
-                summary_of_persona = summarize_persona(client, role, persona_of_job, keywords, percentages)
-                
-                # Display persona summary
-                st.subheader("Job Persona Summary")
-                st.json(json.loads(summary_of_persona))
-                
-                # Process CSV
-                processed_df = process_csv(client, role, summary_of_persona, df, keywords)
-                
-                # Provide download link
+                # Store in session state
+                st.session_state.processed_batches = processed_batches
+                st.session_state.all_processed_data = all_processed_data
+            st.session_state.processing = False
+            st.success("Processing Completed!")
+        
+        # Display download buttons if processed_batches exist
+        if st.session_state.processed_batches:
+            st.header("Download Processed Batches")
+            for i, batch in enumerate(st.session_state.processed_batches):
                 to_write = io.BytesIO()
-                processed_df.to_csv(to_write, index=False)
+                batch.to_csv(to_write, index=False)
                 to_write.seek(0)
                 st.download_button(
-                    label="Download Processed CSV",
+                    label=f"Download Batch {i + 1}",
                     data=to_write,
-                    file_name="processed_candidates.csv",
+                    file_name=f"processed_batch_{i + 1}.csv",
                     mime="text/csv"
                 )
-                
-                st.success("Processing completed successfully!")
+            
+            # Provide a download button for all data
+            to_write_all = io.BytesIO()
+            st.session_state.all_processed_data.to_csv(to_write_all, index=False)
+            to_write_all.seek(0)
+            st.download_button(
+                label="Download All Processed Profiles",
+                data=to_write_all,
+                file_name="processed_candidates_all.csv",
+                mime="text/csv"
+            )
 
 if __name__ == "__main__":
     main()
