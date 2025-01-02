@@ -6,18 +6,20 @@ import time
 import random
 from openai import AzureOpenAI
 # Removed direct API key import for security
-from apikey import api_key  # Ensure your API key is securely imported
 from concurrent.futures import ThreadPoolExecutor
 import logging
 
 # Configure logging
 logging.basicConfig(filename='app.log', level=logging.ERROR)
 
+api_key = st.secrets["azure_openai"]["api_key"]
+azure_endpoint = st.secrets["azure_openai"]["azure_endpoint"]
+
 # Initialize AzureOpenAI client
 def initialize_openai_client(api_key):
     try:
         client = AzureOpenAI(
-            azure_endpoint="https://nw-tech-wu.openai.azure.com/",
+            azure_endpoint=azure_endpoint,
             api_key=api_key,
             api_version="2024-02-01"
         )
@@ -37,7 +39,9 @@ def summarize_persona(client, role, persona_of_job, keywords, percentages):
 
     summarize_persona_prompt = f"""
     {role}
-    Please summarize the following job persona:
+    You are tasked with converting a job description into a structured object format by summarizing it. 
+    
+    Job Description:
     {persona_of_job}
     
     The Keywords/Skills are:
@@ -46,14 +50,32 @@ def summarize_persona(client, role, persona_of_job, keywords, percentages):
     Additionally, please calculate the percentage of matching skills based on the following criteria:
     - Each keyword list has a corresponding percentage as provided.
     
-    Summarize the above job persona, focusing on key skills, qualifications, experience level, and the ideal candidate’s responsibilities. Output the summary in object format with the following structure:
+    Instructions:
+    1. Analyze the job description and identify ALL parameters/conditions mentioned.
+    2. Create a object where each identified parameter becomes a key.
+    3. Always include these base fields:
+       - "persona_name": Job title or role
+       - "required_skills": List of key skills and technical competencies
+       - "persona_summary": Overall summary of the job persona
+    4. For any additional parameters found in the job description (like location, language, experience, etc.), 
+       add them as separate fields with appropriate naming:
+       - "<parameter>_requirements": for requirements like education, language
+       - "<parameter>": for direct values like location, team_size
+    
+    Example structure (but not limited to):
     {{
-      "persona_name": "Job Title",
-      "education_requirements": "Required educational background",
-      "experience_requirements": "Required work experience and expertise",
-      "required_skills": "List of key skills and technical competencies",
-      "persona_summary": "Overall summary of the job persona, outlining the expectations for the candidate",
+      "persona_name": "...",
+      "required_skills": "...",
+      "location": "...",
+      "experience_requirements": "...",
+      "team_size": "...",
+      "language_requirements": "...",
+      // Any other parameters found in the description
+      "persona_summary": "..."
     }}
+
+    Note: The response should dynamically include ALL parameters mentioned in the job description, 
+    not just the ones shown in the example.
     """
     
     messages = [{"role": "system", "content": summarize_persona_prompt}]
@@ -63,8 +85,24 @@ def summarize_persona(client, role, persona_of_job, keywords, percentages):
             model="gpt-4o",  # Replace with your deployment name in Azure
             messages=messages
         )
-        summary_of_persona = response.choices[0].message.content
-        return summary_of_persona
+        raw_content = response.choices[0].message.content
+        # return summary_of_persona
+            # Sanitize the response
+        if raw_content.startswith("```json") and raw_content.endswith("```"):
+            raw_content = raw_content[8:-3].strip()
+        elif raw_content.startswith("```") and raw_content.endswith("```"):
+            raw_content = raw_content[3:-3].strip()
+        
+        # Parse the response to ensure it's valid JSON
+        try:
+            result = json.loads(raw_content)
+        except json.JSONDecodeError:
+            raise ValueError(
+                f"The response is not valid JSON. Raw content: {raw_content}"
+            )
+        
+        return result
+
     except Exception as e:
         st.error(f"Error summarizing persona: {e}")
         logging.error(f"Error summarizing persona: {e}")
@@ -266,6 +304,9 @@ Language: English, Hindi"""
                         st.session_state.keywords, 
                         st.session_state.percentages
                     )
+                    print(summary_of_persona)
+                    st.json(summary_of_persona)
+                    st.session_state.summary_of_persona = summary_of_persona
                     
                     if not summary_of_persona:
                         st.error("Failed to summarize persona. Please check your inputs and API key.")
