@@ -5,8 +5,6 @@ import io
 import time
 import random
 from openai import AzureOpenAI
-# Removed direct API key import for security
-from concurrent.futures import ThreadPoolExecutor
 import logging
 
 # Configure logging
@@ -15,360 +13,257 @@ logging.basicConfig(filename='app.log', level=logging.ERROR)
 api_key = st.secrets["azure_openai"]["api_key"]
 azure_endpoint = st.secrets["azure_openai"]["azure_endpoint"]
 
-# Initialize AzureOpenAI client
 def initialize_openai_client(api_key):
     try:
-        client = AzureOpenAI(
+        return AzureOpenAI(
             azure_endpoint=azure_endpoint,
             api_key=api_key,
             api_version="2024-02-01"
         )
-        return client
     except Exception as e:
         st.error(f"Error initializing OpenAI client: {e}")
         logging.error(f"Error initializing OpenAI client: {e}")
         st.stop()
 
-# Function to summarize the persona
-def summarize_persona(client, role, persona_of_job, keywords, percentages):
-    keyword_sections = []
-    for idx, keyword_list in enumerate(keywords):
-        keyword_str = ', '.join(keyword_list)
-        keyword_sections.append(f"List {idx+1}: {keyword_str}")
-    keywords_combined = '; '.join(keyword_sections)
-
+def summarize_persona(client, persona_of_job, p1_list, p2_list):
     summarize_persona_prompt = f"""
-    {role}
-    You are tasked with converting a job description into a structured object format by summarizing it. 
-    
-    Job Description:
-    {persona_of_job}
-    
-    The Keywords/Skills are:
-    - Keywords: {keywords_combined}
-    
-    Additionally, please calculate the percentage of matching skills based on the following criteria:
-    - Each keyword list has a corresponding percentage as provided.
-    
-    Instructions:
-    1. Analyze the job description and identify ALL parameters/conditions mentioned.
-    2. Create a object where each identified parameter becomes a key.
-    3. Always include these base fields:
-       - "persona_name": Job title or role
-       - "required_skills": List of key skills and technical competencies
-       - "persona_summary": Overall summary of the job persona
-    4. For any additional parameters found in the job description (like location, language, experience, etc.), 
-       add them as separate fields with appropriate naming:
-       - "<parameter>_requirements": for requirements like education, language
-       - "<parameter>": for direct values like location, team_size
-    
-    Example structure (but not limited to):
-    {{
-      "persona_name": "...",
-      "required_skills": "...",
-      "location": "...",
-      "experience_requirements": "...",
-      "team_size": "...",
-      "language_requirements": "...",
-      // Any other parameters found in the description
-      "persona_summary": "..."
-    }}
+        You are tasked with converting a job description into a structured JSON format. Each parameter in the job description should be represented with:
+        - `criteria`: A concise summary of the requirement.
+        - `must_have`: The mandatory conditions or requirements (if it's not mandatory, return `NA`).
+        - `broader_context`: Detailed steps or logic to evaluate the criteria.
 
-    Note: The response should dynamically include ALL parameters mentioned in the job description, 
-    not just the ones shown in the example.
+        **Additional Requirements:**
+        - Include P1 and P2 keywords in the output JSON under the `keywords` field.
+        - P1 keywords: {p1_list}
+        - P2 keywords: {p2_list}
+
+        **Important Notes:**
+        - If `Must Have` is mentioned as `NA`, include `"must_have": "NA"` in the JSON output.
+        - If `Broader Context` is not specified, return `"broader_context": "NA"`.
+
+        Job Description:
+        {persona_of_job}
+
+        Example Output:
+        {{
+            "parameters": {{
+                "age": {{
+                    "criteria": "Age should be less than 30 (consider 31 if other parameters match).",
+                    "must_have": "Age <30. If rest of the parameters match, we can consider 31.",
+                    "broader_context": "1. Candidate will mention in Resume\n2. If DOB is not mentioned, calculate from the year of graduation\n3. If those two are not mentioned, calculate from the starting year of career\n4. Else give as 0"
+                }},
+                "native_language": {{
+                    "criteria": "Native Language or Known Language: Marathi",
+                    "must_have": "Must explicitly mention Marathi in resume.",
+                    "broader_context": "1. Candidate will mention in Resume\n2. If not mentioned, infer based on candidate work locations or native location\n3. Else give as missing"
+                }}
+            }},
+            "keywords": {{
+                "p1": {p1_list},
+                "p2": {p2_list}
+            }}
+        }}
+
+        Return the results strictly in the above JSON format without any additional text or explanations.
     """
-    
-    messages = [{"role": "system", "content": summarize_persona_prompt}]
     
     try:
         response = client.chat.completions.create(
-            model="gpt-4o",  # Replace with your deployment name in Azure
-            messages=messages
+            model="gpt-4o",
+            messages=[{"role": "system", "content": summarize_persona_prompt}]
         )
         raw_content = response.choices[0].message.content
-        # return summary_of_persona
-            # Sanitize the response
-        if raw_content.startswith("```json") and raw_content.endswith("```"):
-            raw_content = raw_content[8:-3].strip()
-        elif raw_content.startswith("```") and raw_content.endswith("```"):
-            raw_content = raw_content[3:-3].strip()
         
-        # Parse the response to ensure it's valid JSON
-        try:
-            result = json.loads(raw_content)
-        except json.JSONDecodeError:
-            raise ValueError(
-                f"The response is not valid JSON. Raw content: {raw_content}"
-            )
+        # Clean JSON response
+        for prefix in ["```json", "```"]:
+            if raw_content.startswith(prefix):
+                raw_content = raw_content[len(prefix):]
+        raw_content = raw_content.strip()
+        
+        # Parse JSON and add keywords if not already included
+        result = json.loads(raw_content)
+        if "keywords" not in result:
+            result["keywords"] = {
+                "p1": p1_list,
+                "p2": p2_list
+            }
         
         return result
-
+    
     except Exception as e:
         st.error(f"Error summarizing persona: {e}")
         logging.error(f"Error summarizing persona: {e}")
-        return ""
+        return {}
 
-# Function to extract profile health
-def extract_profile_health(summary_content):
-    if "High" in summary_content:
-        return "High"
-    elif "Medium" in summary_content:
-        return "Medium"
-    elif "Low" in summary_content:
-        return "Low"
-    else:
-        return "Unknown"
-
-# Function to summarize candidate
-def summarize_candidate(client, role, candidate_profile, summary_of_persona, max_retries=3):
-    summarize_candidate_profile = f"""
-    {role}
-    Please summarize the following candidate profile:
+def summarize_candidate(client, candidate_profile, summary_of_persona, max_retries=5):
+    """Improved version with enhanced error handling and logging"""
+    p1_keywords = summary_of_persona.get("keywords", {}).get("p1", [])
+    p2_keywords = summary_of_persona.get("keywords", {}).get("p2", [])
+    
+    prompt = f"""
+    Analyze the candidate profile against these strict rules:
+    
+    **Job Requirements:**
+    {json.dumps(summary_of_persona, indent=2)}
+    
+    **Candidate Profile:**
     {json.dumps(candidate_profile, indent=2)}
     
-    The summary of persona is: {summary_of_persona}
-    
-    In your summary, focus on the following details:
-    1. A brief overview of the candidate’s educational background (Degree, university, field of study, year of graduation).
-    2. A summary of the candidate's work experience (job titles, companies, job responsibilities, and technologies used).
-    3. A summary of the candidate's key skills and their industry expertise.
-    4. Mention the candidate's location, and the latest job/company they worked at.
-    5. Candidate's headline or professional summary (if available).
-    
-    Additionally, please calculate the percentage of matching skills based on the following criteria:
-    - Calculate the percentage for each keyword list based on the provided percentages.
-    - Sum the percentages for all matched keywords across the lists.
-    
-    Also, return the following data in an object format: you must follow this format
+    **Required JSON Response:**
     {{
-        "skills_match_percentage": "<Percentage of candidate's skills matching the job persona>",
-        "keywords_matched_count": "<Total number of matched keywords>",
-        "matched_keywords": ["<List of keywords that matched>"],
-        "profile_health": "<How well the candidate’s profile aligns with the job persona, e.g., 'High/Medium/Low'>",
-        "stability_of_candidate": {{
-            "average_working_time": "<Average number of months/years spent in past roles>",
-            "experience_in_latest_company": "<Time spent in the latest role, in months/years>"
-        }}
+        "persona_match_percentage": 100.0,
+        "p1_matched": ["skill1", "skill2"],
+        "p1_missing": ["skill3"],
+        "p2_match_percentage": 75.0,
+        "profile_health": "High"
     }}
     """
     
-    messages = [{"role": "system", "content": summarize_candidate_profile}]
-    
     for attempt in range(max_retries):
         try:
+            # Log candidate being processed
+            candidate_name = candidate_profile.get('Candidate Name', 'Unknown')
+            logging.info(f"Processing {candidate_name} (Attempt {attempt+1}/{max_retries})")
+            
+            # API call with timeout
             response = client.chat.completions.create(
-                model="gpt-4o",  # Replace with your deployment name in Azure
-                messages=messages
+                model="gpt-4",  # Verify this matches your Azure deployment name
+                messages=[{"role": "system", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+                timeout=10  # Add timeout
             )
-            summary_content = response.choices[0].message.content
-            profile_health = extract_profile_health(summary_content)
-            return summary_content, profile_health
+            
+            # Clean and validate response
+            raw_content = response.choices[0].message.content
+            cleaned_content = raw_content.strip("` \n")
+            
+            # Parse and validate JSON
+            result = json.loads(cleaned_content)
+            required_keys = ["persona_match_percentage", "p1_matched", "p1_missing", "p2_match_percentage"]
+            if not all(key in result for key in required_keys):
+                missing = [k for k in required_keys if k not in result]
+                raise ValueError(f"Missing keys: {missing}")
+            
+            # Calculate health status
+            result["profile_health"] = "High"  # Default
+            if result["persona_match_percentage"] < 100:
+                result["profile_health"] = "Low"
+            elif p1_keywords and result["p1_missing"]:
+                result["profile_health"] = "Low"
+            elif p2_keywords and result["p2_match_percentage"] < 50:
+                result["profile_health"] = "Medium"
+            
+            logging.info(f"Successfully processed {candidate_name}")
+            return result, result["profile_health"]
+            
+        except json.JSONDecodeError:
+            logging.error(f"Invalid JSON response for {candidate_name}\nRaw content: {raw_content}")
+        except KeyError as e:
+            logging.error(f"Missing key in response: {str(e)}")
         except Exception as e:
-            st.error(f"Error processing candidate: {e}")
-            logging.error(f"Error processing candidate: {e}")
+            logging.error(f"Error processing {candidate_name}: {str(e)}")
             if attempt < max_retries - 1:
-                sleep_time = 2 ** attempt + random.random()
-                st.info(f"Retrying in {sleep_time:.2f} seconds...")
-                time.sleep(sleep_time)
-            else:
-                st.error("Max retries reached. Skipping this candidate.")
-                return "Error", "Unknown"
+                delay = (2 ** attempt) + random.uniform(0, 1)
+                logging.info(f"Retrying in {delay:.1f}s...")
+                time.sleep(delay)
+    
+    logging.error(f"Max retries reached for {candidate_name}")
+    return {"error": "Max retries reached", "candidate": candidate_name}, "Error"
 
-# Function to process CSV in batches
-def process_csv_in_batches(client, role, summary_of_persona, df, keywords, percentages, batch_size=20):
-    if 'Profile Categorization' not in df.columns:
-        df['Profile Categorization'] = None
-    if 'Profile Health' not in df.columns:
-        df['Profile Health'] = None
+def process_csv_in_batches(client, df, summary_of_persona, batch_size=20):
+    df['Profile Categorization'] = None
+    df['Profile Health'] = None
     
     total_rows = len(df)
-    num_batches = (total_rows // batch_size) + (1 if total_rows % batch_size > 0 else 0)
-    
-    # Initialize progress bar and batch info display
     progress_bar = st.progress(0)
-    batch_info = st.empty()
-
-    processed_batches = []
-
-    for batch_num in range(num_batches):
+    processed_count = 0
+    
+    for batch_num in range((total_rows // batch_size) + 1):
         batch_start = batch_num * batch_size
         batch_end = min((batch_num + 1) * batch_size, total_rows)
-        
-        batch_data = df.iloc[batch_start:batch_end]
-        batch_processed_data = batch_data.copy()
-
-        for index, row in batch_data.iterrows():
-            candidate_profile = {col: row[col] for col in batch_data.columns if col not in ['Profile Categorization', 'Profile Health']}
-            summary, profile_health = summarize_candidate(client, role, candidate_profile, summary_of_persona)
-            batch_processed_data.at[index, 'Profile Categorization'] = summary
-            batch_processed_data.at[index, 'Profile Health'] = profile_health
-        
-        processed_batches.append(batch_processed_data)
-        
-        # Update progress bar after each batch
-        progress = (batch_num + 1) / num_batches
-        progress_bar.progress(progress)
-        
-        # Update batch processing info
-        batch_info.write(f"Processed Batch {batch_num + 1}/{num_batches} ({batch_start + 1}-{batch_end})")
+        print(batch_num,)
+        for index in range(batch_start, batch_end):
+            try:
+                candidate_profile = df.iloc[index].to_dict()
+                
+                summary, health = summarize_candidate(client, candidate_profile, summary_of_persona)
+                
+                # Store as JSON string for CSV compatibility
+                df.at[index, 'Profile Categorization'] = json.dumps(summary, ensure_ascii=False)
+                df.at[index, 'Profile Health'] = health
+                processed_count += 1
+                
+            except Exception as e:
+                logging.error(f"Error processing row {index}: {str(e)}")
+                df.at[index, 'Profile Health'] = "Error"
+            
+            # Update progress after each candidate
+            progress_bar.progress(processed_count / total_rows)
     
-    # Concatenate all processed data
-    all_processed_data = pd.concat(processed_batches)
-    
-    return processed_batches, all_processed_data
+    return df
 
-# Streamlit UI
 def main():
     st.title("Talent Acquisition & Candidate Profiling Tool")
-    
-    st.sidebar.header("Configuration")
-        
     client = initialize_openai_client(api_key)
     
-    st.header("Job Persona Configuration")
-    
-    # Job Persona Input
-    persona_of_job = st.text_area(
-        "Job Persona",
-        value="""Exp: 8-15 yrs
-Location: Anywhere in India
-Team handle size: 150 +
-Edutech exp: At least 4 yrs
-Language: English, Hindi"""
-    )
-    
-    st.subheader("Keywords and Percentages")
-    
-    # Initialize session state for dynamic keyword lists
-    if 'keywords' not in st.session_state:
-        st.session_state.keywords = [[]]
-    if 'percentages' not in st.session_state:
-        st.session_state.percentages = [100]
-    
-    # Function to add a new keyword list
-    def add_keyword_list():
-        st.session_state.keywords.append([])
-        st.session_state.percentages.append(100)
-    
-    # Display keyword lists
-    for i in range(len(st.session_state.keywords)):
-        with st.expander(f"Keyword List {i+1}"):
-            keywords_input = st.text_area(
-                f"Keywords for List {i+1} (comma separated)",
-                value=', '.join(st.session_state.keywords[i]),
-                key=f"keywords_{i+1}"
+    # Job Persona Configuration
+    with st.expander("Job Persona Configuration", expanded=True):
+        persona_of_job = st.text_area(
+            "Job Description",
+            value="""Parameter: Language\nValue: Telugu or Tamil\nBroader context for Prompt Criteria: Candidate will mention in the languages section or based on the location""",
+            height=200
+        )
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            p1_keywords = st.text_input(
+                "Primary Skills (P1 - Optional)",
+                placeholder="Comma-separated core skills"
             )
-            st.session_state.keywords[i] = [kw.strip() for kw in keywords_input.split(',') if kw.strip()]
-            percentage_input = st.number_input(
-                f"Percentage for List {i+1}",
-                min_value=0, max_value=100,
-                value=st.session_state.percentages[i],
-                step=1,
-                key=f"percentage_{i+1}"
+        with col2:
+            p2_keywords = st.text_input(
+                "Secondary Skills (P2 - Optional)",
+                placeholder="Comma-separated nice-to-have skills"
             )
-            st.session_state.percentages[i] = percentage_input
-    
-    # Button to add new keyword list
-    if st.button("Add Keyword List"):
-        add_keyword_list()
-    
-    # Process File Upload
-    uploaded_file = st.file_uploader("Upload Candidate Profiles", type=["csv"])
-    
-    if uploaded_file is not None:
-        try:
-            df = pd.read_csv(uploaded_file)
-            st.write("Uploaded file:")
-            st.dataframe(df.head())
-        except Exception as e:
-            st.error(f"Error reading the CSV file: {e}")
-            st.stop()
         
-        # Initialize session state for processing
-        if 'processed_batches' not in st.session_state:
-            st.session_state.processed_batches = []
-        if 'all_processed_data' not in st.session_state:
-            st.session_state.all_processed_data = pd.DataFrame()
-        if 'processing' not in st.session_state:
-            st.session_state.processing = False
+        # Add a button to process the persona
+        if st.button("Process Persona", key="process_persona"):
+            if persona_of_job:
+                with st.spinner("Analyzing job description..."):
+                    p1_list = [kw.strip() for kw in p1_keywords.split(",") if kw.strip()] if p1_keywords else []
+                    p2_list = [kw.strip() for kw in p2_keywords.split(",") if kw.strip()] if p2_keywords else []
+                    
+                    persona = summarize_persona(client, persona_of_job, p1_list, p2_list)
+                    st.session_state.persona = persona
+                    st.subheader("Generated Persona")
+                    st.json(persona)
+                    st.success("Persona processed successfully!")
+            else:
+                st.error("Please provide a job description to process the persona.")
+    
+    # Candidate Processing Section
+    uploaded_file = st.file_uploader("Upload Candidate Profiles (CSV)", type=["csv"])
+    
+    if uploaded_file:
+        df = pd.read_csv(uploaded_file)
+        st.write("Uploaded candidate preview:")
+        st.dataframe(df.head(3))
         
-        # Start processing
-        if st.button("Start Processing") and not st.session_state.processing:
-            st.session_state.processing = True
-            with st.spinner("Processing..."):
-                try:
-                    summary_of_persona = summarize_persona(
-                        client, 
-                        "Job Title", 
-                        persona_of_job, 
-                        st.session_state.keywords, 
-                        st.session_state.percentages
-                    )
-                    print(summary_of_persona)
-                    st.json(summary_of_persona)
-                    st.session_state.summary_of_persona = summary_of_persona
-                    
-                    if not summary_of_persona:
-                        st.error("Failed to summarize persona. Please check your inputs and API key.")
-                        st.session_state.processing = False
-                        st.stop()
-                    
-                    processed_batches, all_processed_data = process_csv_in_batches(
-                        client, 
-                        "Job Title", 
-                        summary_of_persona, 
-                        df, 
-                        st.session_state.keywords, 
-                        st.session_state.percentages, 
-                        batch_size=20  # Reduced batch size for better performance
-                    )
-                    
-                    # Store in session state
-                    st.session_state.processed_batches = processed_batches
-                    st.session_state.all_processed_data = all_processed_data
-                except Exception as e:
-                    st.error(f"An error occurred during processing: {e}")
-                finally:
-                    st.session_state.processing = False
-            st.success("Processing Completed!")
-        
-        # Display download buttons if processed_batches exist
-        if st.session_state.processed_batches:
-            st.header("Download Processed Batches")
-            for i, batch in enumerate(st.session_state.processed_batches):
-                to_write = io.BytesIO()
-                try:
-                    batch.to_csv(to_write, index=False)
-                except Exception as e:
-                    st.error(f"Error converting batch {i+1} to CSV: {e}")
-                    continue
-                to_write.seek(0)
+        if 'persona' not in st.session_state:
+            st.warning("Please process the job persona first.")
+        elif st.button("Start Processing Candidates", key="process_candidates"):
+            with st.spinner("Processing candidates..."):
+                processed_df = process_csv_in_batches(client, df, st.session_state.persona)
+                st.success(f"Processed {len(processed_df)} candidates!")
+                
+                csv = processed_df.to_csv(index=False).encode()
                 st.download_button(
-                    label=f"Download Batch {i + 1}",
-                    data=to_write,
-                    file_name=f"processed_batch_{i + 1}.csv",
+                    "Download Full Results",
+                    data=csv,
+                    file_name="processed_candidates.csv",
                     mime="text/csv"
                 )
-            
-            # Provide a download button for all data
-            to_write_all = io.BytesIO()
-            try:
-                st.session_state.all_processed_data.to_csv(to_write_all, index=False)
-            except Exception as e:
-                st.error(f"Error converting all processed data to CSV: {e}")
-            to_write_all.seek(0)
-            st.download_button(
-                label="Download All Processed Profiles",
-                data=to_write_all,
-                file_name="processed_candidates_all.csv",
-                mime="text/csv"
-            )
-        
-        # Optional: Add a button to clear cache if needed
-        if st.button("Clear Cache"):
-            st.cache_data.clear()
-            st.cache_resource.clear()
-            st.success("Cache cleared!")
-
 if __name__ == "__main__":
     main()
