@@ -100,23 +100,58 @@ def summarize_candidate(client, candidate_profile, summary_of_persona, max_retri
     p1_keywords = summary_of_persona.get("keywords", {}).get("p1", [])
     p2_keywords = summary_of_persona.get("keywords", {}).get("p2", [])
     
+    # prompt = f"""
+    # Analyze the candidate profile against these strict rules:
+    
+    # **Job Requirements:**
+    # {json.dumps(summary_of_persona, indent=2)}
+    
+    # **Candidate Profile:**
+    # {json.dumps(candidate_profile, indent=2)}
+    
+    # **Required JSON Response:**
+    # {{
+    #     "persona_match_percentage": 100.0,
+    #     "p1_matched": ["skill1", "skill2"],
+    #     "p1_missing": ["skill3"],
+    #     "p2_match_percentage": 75.0,
+    #     "profile_health": "High"
+    # }}
+    # """
     prompt = f"""
-    Analyze the candidate profile against these strict rules:
-    
-    **Job Requirements:**
-    {json.dumps(summary_of_persona, indent=2)}
-    
-    **Candidate Profile:**
-    {json.dumps(candidate_profile, indent=2)}
-    
-    **Required JSON Response:**
-    {{
-        "persona_match_percentage": 100.0,
-        "p1_matched": ["skill1", "skill2"],
-        "p1_missing": ["skill3"],
-        "p2_match_percentage": 75.0,
-        "profile_health": "High"
-    }}
+        Analyze the candidate profile against the job requirements following these strict guidelines:
+
+        1. **Keyword Analysis:**
+        - Scan ALL sections of the candidate profile (skills, about, experience, certifications, etc.) for P1 and P2 keywords.
+        - Calculate percentages based SOLELY on keyword matches:
+            - P1 Match %% = (Number of matched P1 keywords / Total P1 keywords) * 100
+            - P2 Match %% = (Number of matched P2 keywords / Total P2 keywords) * 100
+
+        2. **Experience Validation:**
+        - Consider experience mentioned in BOTH:
+            a) The 'About' section summary
+            b) Individual position entries in the 'Experience' section
+        - Verify if total experience meets or exceeds the requirement
+
+        3. **Profile Health Determination:**
+        - "High": 100% P1 match AND meets experience requirement
+        - "Medium": 80-99% P1 match AND meets experience requirement
+        - "Low": <80% P1 match OR fails experience requirement
+
+        **Job Requirements:**
+        {json.dumps(summary_of_persona, indent=2)}
+
+        **Candidate Profile:**
+        {json.dumps(candidate_profile, indent=2)}
+
+        **Required JSON Response:**
+        {{
+            "p1_match_percentage": 100.0,  
+            "p1_matched": ["cloud-architecture", "aws"],
+            "p1_missing": ["azure"],
+            "p2_match_percentage": 60.0,   
+            "profile_health": "High"       
+        }}
     """
     
     for attempt in range(max_retries):
