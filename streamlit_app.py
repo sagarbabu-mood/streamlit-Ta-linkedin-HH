@@ -214,7 +214,7 @@ def main():
     with st.expander("Job Persona Configuration", expanded=True):
         persona_of_job = st.text_area(
             "Job Description",
-            value="""Parameter: Language\nValue: Telugu or Tamil\nBroader context for Prompt Criteria: Candidate will mention in the languages section or based on the location""",
+            value="""Parameter: Language\nMust Have: Telugu or Tamil\nBroader context for Prompt Criteria: Candidate will mention in the languages section or based on the location""",
             height=200
         )
         
