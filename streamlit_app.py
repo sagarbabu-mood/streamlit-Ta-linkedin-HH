@@ -100,32 +100,14 @@ def summarize_candidate(client, candidate_profile, summary_of_persona, max_retri
     p1_keywords = summary_of_persona.get("keywords", {}).get("p1", [])
     p2_keywords = summary_of_persona.get("keywords", {}).get("p2", [])
     
-    # prompt = f"""
-    # Analyze the candidate profile against these strict rules:
-    
-    # **Job Requirements:**
-    # {json.dumps(summary_of_persona, indent=2)}
-    
-    # **Candidate Profile:**
-    # {json.dumps(candidate_profile, indent=2)}
-    
-    # **Required JSON Response:**
-    # {{
-    #     "persona_match_percentage": 100.0,
-    #     "p1_matched": ["skill1", "skill2"],
-    #     "p1_missing": ["skill3"],
-    #     "p2_match_percentage": 75.0,
-    #     "profile_health": "High"
-    # }}
-    # """
     prompt = f"""
         Analyze the candidate profile against the job requirements following these strict guidelines:
 
         1. **Keyword Analysis:**
         - Scan ALL sections of the candidate profile (skills, about, experience, certifications, etc.) for P1 and P2 keywords.
         - Calculate percentages based SOLELY on keyword matches:
-            - P1 Match %% = (Number of matched P1 keywords / Total P1 keywords) * 100
-            - P2 Match %% = (Number of matched P2 keywords / Total P2 keywords) * 100
+            - P1 Match % = (Number of matched P1 keywords / Total P1 keywords) * 100
+            - P2 Match % = (Number of matched P2 keywords / Total P2 keywords) * 100
 
         2. **Experience Validation:**
         - Consider experience mentioned in BOTH:
@@ -144,66 +126,52 @@ def summarize_candidate(client, candidate_profile, summary_of_persona, max_retri
         **Candidate Profile:**
         {json.dumps(candidate_profile, indent=2)}
 
-        **Required JSON Response:**
+        **Required JSON Response Format:**
         {{
-            "p1_match_percentage": 100.0,  
-            "p1_matched": ["cloud-architecture", "aws"],
-            "p1_missing": ["azure"],
-            "p2_match_percentage": 60.0,   
-            "profile_health": "High"       
+            "p1_match_percentage": 85.5,
+            "p1_matched": ["keyword1", "keyword2"],
+            "p1_missing": ["keyword3"],
+            "p2_match_percentage": 75.0,
+            "profile_health": "Medium"
         }}
+
+        Provide the response in the exact JSON format shown above.
     """
     
     for attempt in range(max_retries):
         try:
-            # Log candidate being processed
             candidate_name = candidate_profile.get('Candidate Name', 'Unknown')
             logging.info(f"Processing {candidate_name} (Attempt {attempt+1}/{max_retries})")
             
-            # API call with timeout
+            # Update the model name to match your Azure deployment
             response = client.chat.completions.create(
-                model="gpt-4",  # Verify this matches your Azure deployment name
+                model="gpt-4o",  # Replace with your actual Azure deployment name
                 messages=[{"role": "system", "content": prompt}],
                 response_format={"type": "json_object"},
-                temperature=0.1,
-                timeout=10  # Add timeout
+                temperature=0.1
             )
             
-            # Clean and validate response
             raw_content = response.choices[0].message.content
-            cleaned_content = raw_content.strip("` \n")
+            result = json.loads(raw_content)
             
-            # Parse and validate JSON
-            result = json.loads(cleaned_content)
-            required_keys = ["persona_match_percentage", "p1_matched", "p1_missing", "p2_match_percentage"]
+            # Update required keys to match the new format
+            required_keys = ["p1_match_percentage", "p1_matched", "p1_missing", "p2_match_percentage", "profile_health"]
             if not all(key in result for key in required_keys):
                 missing = [k for k in required_keys if k not in result]
-                raise ValueError(f"Missing keys: {missing}")
-            
-            # Calculate health status
-            result["profile_health"] = "High"  # Default
-            if result["persona_match_percentage"] < 100:
-                result["profile_health"] = "Low"
-            elif p1_keywords and result["p1_missing"]:
-                result["profile_health"] = "Low"
-            elif p2_keywords and result["p2_match_percentage"] < 50:
-                result["profile_health"] = "Medium"
+                raise ValueError(f"Missing keys in response: {missing}")
             
             logging.info(f"Successfully processed {candidate_name}")
             return result, result["profile_health"]
             
-        except json.JSONDecodeError:
-            logging.error(f"Invalid JSON response for {candidate_name}\nRaw content: {raw_content}")
-        except KeyError as e:
-            logging.error(f"Missing key in response: {str(e)}")
         except Exception as e:
-            logging.error(f"Error processing {candidate_name}: {str(e)}")
+            logging.error(f"Attempt {attempt + 1} failed for {candidate_name}: {str(e)}")
             if attempt < max_retries - 1:
                 delay = (2 ** attempt) + random.uniform(0, 1)
                 logging.info(f"Retrying in {delay:.1f}s...")
                 time.sleep(delay)
+            else:
+                logging.error(f"Max retries reached for {candidate_name}")
     
-    logging.error(f"Max retries reached for {candidate_name}")
     return {"error": "Max retries reached", "candidate": candidate_name}, "Error"
 
 def process_csv_in_batches(client, df, summary_of_persona, batch_size=20):
