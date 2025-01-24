@@ -197,7 +197,7 @@ def summarize_candidate(client, candidate_profile, summary_of_persona, max_retri
         **Job Requirements:**  
         {summary_of_persona}
 
-        **Candidate Resume:**  
+        **Candidate Profile:**  
         {candidate_profile}
         
     """
