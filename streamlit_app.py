@@ -7,6 +7,8 @@ import random
 from openai import AzureOpenAI
 import logging
 
+today_date = datetime.now().strftime('%Y-%m-%d')
+
 # Configure logging
 logging.basicConfig(filename='app.log', level=logging.ERROR)
 
@@ -100,44 +102,86 @@ def summarize_candidate(client, candidate_profile, summary_of_persona, max_retri
     p1_keywords = summary_of_persona.get("keywords", {}).get("p1", [])
     p2_keywords = summary_of_persona.get("keywords", {}).get("p2", [])
     
-    prompt = f"""
-        Analyze the candidate profile against the job requirements following these strict guidelines:
+### Updated Prompt
 
-        1. **Keyword Analysis:**
-        - Scan ALL sections of the candidate profile (skills, about, experience, certifications, etc.) for P1 and P2 keywords.
-        - Calculate percentages based SOLELY on keyword matches:
-            - P1 Match % = (Number of matched P1 keywords / Total P1 keywords) * 100
-            - P2 Match % = (Number of matched P2 keywords / Total P2 keywords) * 100
+prompt = f"""
+# HeadHunting Expert
 
-        2. **Experience Validation:**
-        - Consider experience mentioned in BOTH:
-            a) The 'About' section summary
-            b) Individual position entries in the 'Experience' section
-        - Verify if total experience meets or exceeds the requirement
+You are an expert in Headhunting with extensive experience in talent assessment and recruitment. You are provided with the **Job Requirements** and **Candidate Profile**, your task is to perform a precise, criteria-based evaluation of candidate profiles against the job requirements provided.
 
-        3. **Profile Health Determination:**
-        - "High": 100% P1 match AND meets experience requirement
-        - "Medium": 80-99% P1 match AND meets experience requirement
-        - "Low": <80% P1 match OR fails experience requirement
+# Inputs
+```
+- You are provided with the **Job Requirements** and **Candidate Profile**
+  - **Job Requirements** contains the requirements of a particular job.
+  - **Candidate Profile** contains the details of a candidate
+```
 
-        **Job Requirements:**
-        {json.dumps(summary_of_persona, indent=2)}
+## Understanding the Job parameters:
+```
+- GO through the **Job Requirements** details provided and understand the parameters and keywords of the job role.
+```
 
-        **Candidate Profile:**
-        {json.dumps(candidate_profile, indent=2)}
+## Data Extraction Instructions:
+```
+Thoroughly review the candidate's profile and get the required details mentioned in the 'Job Requirements'.
+1. Extract all dates (like age, work experience, etc) and put them in this format (YYYY-MM-DD)
+2. Identify the job roles and their durations (consider even if duration is still present)
+3. Extract the candidate's educational qualifications with completion dates (consider even if duration is still present)
+4. List all the skills mentioned in the candidate profile.
+5. Note if any of the information (like: age, language, location) is not explicitly mentioned in the candidate profile then evaluate as below:
+    - If a candidate hasn't mentioned his date explicitly but provided the `date of birth` then calculate the years, else keep it as '0'
+    - Extract the speaking language based on the location and work details provided, else return as '0'
+    - If the end date of the work experience is still as present then calculate the experience from the start date to till `today:{today_date}` and compare the total experience again the parameter.
+```
 
-        **Required JSON Response Format:**
-        {{
-            "p1_match_percentage": 85.5,
-            "p1_matched": ["keyword1", "keyword2"],
-            "p1_missing": ["keyword3"],
-            "p2_match_percentage": 75.0,
-            "profile_health": "Medium"
-        }}
+## Job parameters Evaluations:
+```
+- Based on the parameters provided in the **Job Requirements**, evaluate each parameter against the Candidate's profile to check the eligibility for the job role.
+- **Persona Matching:**
+  1. If the persona is not matching 100%, the candidate profile health is low.
+  2. If the persona matches 100%, then:
+     2.1. If P1 keywords are not mentioned, then check for P2 keywords criteria.
+     2.2. If the persona matches 100%, then check for P2 keywords. If the P2 keyword is mentioned & not matched 100%, the profile health is low.
+     2.3. If the persona matches 100%, then check for P2 keywords criteria. If the P2 keyword is mentioned & 100% matches, then check for P2 keywords.
+- **P2 Criteria:**
+  1. If P2 keywords are not mentioned, the profile health is high.
+  2. If P2 keywords are at least 50% match, the profile health is high.
+  3. If P2 keywords are matching with less than 50%, the profile health is medium.
+```
 
-        Provide the response in the exact JSON format shown above.
-    """
-    
+## Restrictions
+```
+- Do not make any assumption with the information provided and only evaluate if particular mentioned in the candidate's profile
+```
+
+## Common Missing Points:
+```
+- Mentioning as more keyword percentage matching even though the candidate is not mentioned in the profile/
+```
+
+Analyze the candidate profile against these strict rules:
+
+##Output Requirements:
+```
+- Here is an example of the JSON object Format Response for your reference.
+    ```
+    {{
+        "persona_match_percentage": 100.0,
+        "p1_match_percentage": 100.00,
+        "p1_matched": ["skill1", "skill2"],
+        "p1_missing": ["skill3"],
+        "p2_match_percentage": 75.0,
+        "p2_matched": ["skill1", "skill2"],
+        "p2_missing": ["skill3"],
+        "profile_health": "High"
+    }}
+    ```
+```
+
+Note: Do not include any extra content in the output.
+```
+"""
+
     for attempt in range(max_retries):
         try:
             candidate_name = candidate_profile.get('Candidate Name', 'Unknown')
