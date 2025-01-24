@@ -4,7 +4,7 @@ import json
 import io
 import time
 import random
-import datetime
+from datetime import datetime
 from openai import AzureOpenAI
 import logging
 
