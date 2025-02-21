@@ -18,7 +18,7 @@ def initialize_openai_client(api_key):
         return AzureOpenAI(
             azure_endpoint=azure_endpoint,
             api_key=api_key,
-            api_version="2024-02-01"
+            api_version="2024-08-01-preview"
         )
     except Exception as e:
         st.error(f"Error initializing OpenAI client: {e}")
