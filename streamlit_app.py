@@ -6,8 +6,6 @@ import time
 import random
 from openai import AzureOpenAI
 import logging
-import re 
-import json 
 
 # Configure logging
 logging.basicConfig(filename='app.log', level=logging.ERROR)
@@ -76,30 +74,13 @@ def summarize_persona(client, persona_of_job, p1_list, p2_list):
         )
         raw_content = response.choices[0].message.content
         
-        # Enhanced JSON cleaning: Remove code blocks, extra whitespace, and trailing text
-        raw_content = raw_content.strip()
+        # Clean JSON response
         for prefix in ["```json", "```"]:
             if raw_content.startswith(prefix):
                 raw_content = raw_content[len(prefix):]
-            if raw_content.endswith(prefix):
-                raw_content = raw_content[:-len(prefix)]
-        
-        # Use regex to extract JSON content, assuming it’s wrapped in curly braces or quotes
-        json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
-        if json_match:
-            raw_content = json_match.group(0)
-        else:
-            raise ValueError("No valid JSON object found in response")
-        
-        # Remove any trailing or leading whitespace and ensure valid JSON
         raw_content = raw_content.strip()
-        # Replace any single quotes with double quotes for JSON compatibility
-        raw_content = raw_content.replace("'", '"')
-        # Remove any trailing commas or invalid characters
-        raw_content = re.sub(r',\s*}', '}', raw_content)
-        raw_content = re.sub(r',\s*]', ']', raw_content)
         
-        # Parse JSON and add keywords if not included
+        # Parse JSON and add keywords if not already included
         result = json.loads(raw_content)
         if "keywords" not in result:
             result["keywords"] = {
@@ -109,10 +90,6 @@ def summarize_persona(client, persona_of_job, p1_list, p2_list):
         
         return result
     
-    except json.JSONDecodeError as e:
-        st.error(f"Error parsing JSON response: {e} (Raw content: {raw_content[:200] + '...' if len(raw_content) > 200 else raw_content})")
-        logging.error(f"Error parsing JSON response: {e}\nRaw content: {raw_content}")
-        return {}
     except Exception as e:
         st.error(f"Error summarizing persona: {e}")
         logging.error(f"Error summarizing persona: {e}")
@@ -140,8 +117,6 @@ def summarize_candidate(client, candidate_profile, summary_of_persona, max_retri
         "p2_match_percentage": 75.0,
         "profile_health": "High"
     }}
-    
-    Return the result strictly as a JSON object without any additional text, code blocks, or explanations.
     """
     
     for attempt in range(max_retries):
@@ -154,77 +129,40 @@ def summarize_candidate(client, candidate_profile, summary_of_persona, max_retri
             response = client.chat.completions.create(
                 model="gpt-4o",  # Verify this matches your Azure deployment name
                 messages=[{"role": "system", "content": prompt}],
+                response_format={"type": "json_object"},
                 temperature=0.1,
                 timeout=10  # Add timeout
             )
             
-            # Get raw response
+            # Clean and validate response
             raw_content = response.choices[0].message.content
-            logging.debug(f"Raw response for {candidate_name}: {raw_content}")
-            
-            # Print for debugging
-            print("Raw Content:")
-            print(raw_content)
-            print("-----------------------------------")
-            
-            # Enhanced JSON cleaning: Remove code blocks, extra whitespace, and trailing text
             cleaned_content = raw_content.strip("` \n")
-            for prefix in ["```json", "```"]:
-                if cleaned_content.startswith(prefix):
-                    cleaned_content = cleaned_content[len(prefix):]
-                if cleaned_content.endswith(prefix):
-                    cleaned_content = cleaned_content[:-len(prefix)]
             
-            # Use regex to extract JSON object
-            json_match = re.search(r'\{.*\}', cleaned_content, re.DOTALL)
-            if json_match:
-                cleaned_content = json_match.group(0)
-            else:
-                raise ValueError(f"No valid JSON object found in response for {candidate_name}")
-            
-            # Ensure valid JSON by replacing single quotes and removing trailing commas
-            cleaned_content = cleaned_content.strip()
-            cleaned_content = cleaned_content.replace("'", '"')
-            cleaned_content = re.sub(r',\s*}', '}', cleaned_content)
-            cleaned_content = re.sub(r',\s*]', ']', cleaned_content)
-            
-            # Print cleaned content for debugging
-            print("Cleaned Content:")
-            print(cleaned_content)
-            print("-----------------------------------")
-            
-            # Parse JSON
+            # Parse and validate JSON
             result = json.loads(cleaned_content)
-            required_keys = ["persona_match_percentage", "p1_matched", "p1_missing", "p2_match_percentage", "profile_health"]
+            required_keys = ["persona_match_percentage", "p1_matched", "p1_missing", "p2_match_percentage"]
             if not all(key in result for key in required_keys):
                 missing = [k for k in required_keys if k not in result]
-                raise ValueError(f"Missing keys in response for {candidate_name}: {missing}")
+                raise ValueError(f"Missing keys: {missing}")
             
             # Calculate health status
+            result["profile_health"] = "High"  # Default
             if result["persona_match_percentage"] < 100:
                 result["profile_health"] = "Low"
             elif p1_keywords and result["p1_missing"]:
                 result["profile_health"] = "Low"
             elif p2_keywords and result["p2_match_percentage"] < 50:
                 result["profile_health"] = "Medium"
-            else:
-                result["profile_health"] = "High"
             
             logging.info(f"Successfully processed {candidate_name}")
             return result, result["profile_health"]
             
-        except json.JSONDecodeError as e:
-            logging.error(f"Invalid JSON response for {candidate_name}\nRaw content: {raw_content}\nCleaned content: {cleaned_content}")
-            print(f"JSON Decode Error: {e}")
-        except ValueError as e:
-            logging.error(f"Value error for {candidate_name}: {str(e)}")
-            print(f"Value Error: {e}")
+        except json.JSONDecodeError:
+            logging.error(f"Invalid JSON response for {candidate_name}\nRaw content: {raw_content}")
         except KeyError as e:
-            logging.error(f"Missing key in response for {candidate_name}: {str(e)}")
-            print(f"Key Error: {e}")
+            logging.error(f"Missing key in response: {str(e)}")
         except Exception as e:
             logging.error(f"Error processing {candidate_name}: {str(e)}")
-            print(f"General Error: {e}")
             if attempt < max_retries - 1:
                 delay = (2 ** attempt) + random.uniform(0, 1)
                 logging.info(f"Retrying in {delay:.1f}s...")
