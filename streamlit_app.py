@@ -130,7 +130,17 @@ def summarize_candidate(candidate_profile, summary_of_persona, max_retries=5):
             logging.info(f"Processing {candidate_name} (Attempt {attempt+1}/{max_retries})")
             
             raw_content = gemini_completion(prompt)
+            # For debugging: print raw content
+            logging.info(f"Raw response for {candidate_name}: {raw_content}")
+            
+            # Clean the response: remove markdown or extra text
             cleaned_content = raw_content.strip("` \n")
+            # Optionally, extract valid JSON portion if extra data is present.
+            start_index = cleaned_content.find("{")
+            end_index = cleaned_content.rfind("}")
+            if start_index != -1 and end_index != -1:
+                cleaned_content = cleaned_content[start_index:end_index+1]
+            
             result = json.loads(cleaned_content)
             required_keys = ["persona_match_percentage", "p1_matched", "p1_missing", "p2_match_percentage"]
             if not all(key in result for key in required_keys):
@@ -148,12 +158,10 @@ def summarize_candidate(candidate_profile, summary_of_persona, max_retries=5):
             logging.info(f"Successfully processed {candidate_name}")
             return result, result["profile_health"]
             
-        except json.JSONDecodeError:
-            logging.error(f"Invalid JSON response for {candidate_name}\nRaw content: {raw_content}")
-        except KeyError as e:
-            logging.error(f"Missing key in response: {str(e)}")
+        except json.JSONDecodeError as jde:
+            logging.error(f"Invalid JSON response for {candidate_name}\nRaw content: {raw_content}\nError: {jde}")
         except Exception as e:
-            logging.error(f"Error processing {candidate_name}: {str(e)}")
+            logging.error(f"Error processing {candidate_name}: {e}")
             if attempt < max_retries - 1:
                 delay = (2 ** attempt) + random.uniform(0, 1)
                 logging.info(f"Retrying in {delay:.1f}s...")
