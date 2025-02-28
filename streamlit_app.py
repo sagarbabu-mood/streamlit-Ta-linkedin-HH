@@ -82,9 +82,19 @@ def summarize_persona(persona_of_job, p1_list, p2_list):
             if raw_content.startswith(prefix):
                 raw_content = raw_content[len(prefix):]
         raw_content = raw_content.strip()
-        result = json.loads(raw_content)
+        
+        # Extract the first JSON object from the raw content.
+        start_index = raw_content.find("{")
+        end_index = raw_content.rfind("}")
+        if start_index != -1 and end_index != -1:
+            json_str = raw_content[start_index:end_index+1]
+        else:
+            json_str = raw_content
+        
+        result = json.loads(json_str)
         if "keywords" not in result:
             result["keywords"] = {"p1": p1_list, "p2": p2_list}
+        
         return result
     except Exception as e:
         st.error(f"Error summarizing persona: {e}")
