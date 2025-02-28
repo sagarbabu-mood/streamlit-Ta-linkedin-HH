@@ -4,28 +4,36 @@ import json
 import io
 import time
 import random
-from openai import AzureOpenAI
+import requests
 import logging
 
 # Configure logging
 logging.basicConfig(filename='app.log', level=logging.ERROR)
 
-api_key = st.secrets["azure_openai"]["api_key"]
-azure_endpoint = st.secrets["azure_openai"]["azure_endpoint"]
+# Retrieve Gemini API credentials from secrets.
+gemini_api_key = st.secrets["gemini"]["api_key"]
+gemini_endpoint = st.secrets["gemini"]["endpoint"]
 
-def initialize_openai_client(api_key):
+def gemini_completion(prompt):
+    headers = {"Content-Type": "application/json"}
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
-        return AzureOpenAI(
-            azure_endpoint=azure_endpoint,
-            api_key=api_key,
-            api_version="2024-08-01-preview"
-        )
+        response = requests.post(gemini_endpoint, headers=headers, json=payload)
+        if response.status_code == 200:
+            data = response.json()
+            if "candidates" in data and len(data["candidates"]) > 0:
+                candidate = data["candidates"][0]
+                if "content" in candidate and "parts" in candidate["content"] and len(candidate["content"]["parts"]) > 0:
+                    return candidate["content"]["parts"][0]["text"].strip()
+            return ""
+        else:
+            logging.error(f"Gemini API error: {response.status_code} {response.text}")
+            return ""
     except Exception as e:
-        st.error(f"Error initializing OpenAI client: {e}")
-        logging.error(f"Error initializing OpenAI client: {e}")
-        st.stop()
+        logging.error(f"Exception in gemini_completion: {e}")
+        return ""
 
-def summarize_persona(client, persona_of_job, p1_list, p2_list):
+def summarize_persona(persona_of_job, p1_list, p2_list):
     summarize_persona_prompt = f"""
         You are tasked with converting a job description into a structured JSON format. Each parameter in the job description should be represented with:
         - `criteria`: A concise summary of the requirement.
@@ -50,12 +58,12 @@ def summarize_persona(client, persona_of_job, p1_list, p2_list):
                 "age": {{
                     "criteria": "Age should be less than 30 (consider 31 if other parameters match).",
                     "must_have": "Age <30. If rest of the parameters match, we can consider 31.",
-                    "broader_context": "1. Candidate will mention in Resume\n2. If DOB is not mentioned, calculate from the year of graduation\n3. If those two are not mentioned, calculate from the starting year of career\n4. Else give as 0"
+                    "broader_context": "1. Candidate will mention in Resume\\n2. If DOB is not mentioned, calculate from the year of graduation\\n3. If those two are not mentioned, calculate from the starting year of career\\n4. Else give as 0"
                 }},
                 "native_language": {{
                     "criteria": "Native Language or Known Language: Marathi",
                     "must_have": "Must explicitly mention Marathi in resume.",
-                    "broader_context": "1. Candidate will mention in Resume\n2. If not mentioned, infer based on candidate work locations or native location\n3. Else give as missing"
+                    "broader_context": "1. Candidate will mention in Resume\\n2. If not mentioned, infer based on candidate work locations or native location\\n3. Else give as missing"
                 }}
             }},
             "keywords": {{
@@ -68,35 +76,22 @@ def summarize_persona(client, persona_of_job, p1_list, p2_list):
     """
     
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "system", "content": summarize_persona_prompt}]
-        )
-        raw_content = response.choices[0].message.content
-        
-        # Clean JSON response
+        raw_content = gemini_completion(summarize_persona_prompt)
+        # Remove markdown formatting if present.
         for prefix in ["```json", "```"]:
             if raw_content.startswith(prefix):
                 raw_content = raw_content[len(prefix):]
         raw_content = raw_content.strip()
-        
-        # Parse JSON and add keywords if not already included
         result = json.loads(raw_content)
         if "keywords" not in result:
-            result["keywords"] = {
-                "p1": p1_list,
-                "p2": p2_list
-            }
-        
+            result["keywords"] = {"p1": p1_list, "p2": p2_list}
         return result
-    
     except Exception as e:
         st.error(f"Error summarizing persona: {e}")
         logging.error(f"Error summarizing persona: {e}")
         return {}
 
-def summarize_candidate(client, candidate_profile, summary_of_persona, max_retries=5):
-    """Improved version with enhanced error handling and logging"""
+def summarize_candidate(candidate_profile, summary_of_persona, max_retries=5):
     p1_keywords = summary_of_persona.get("keywords", {}).get("p1", [])
     p2_keywords = summary_of_persona.get("keywords", {}).get("p2", [])
     
@@ -121,32 +116,18 @@ def summarize_candidate(client, candidate_profile, summary_of_persona, max_retri
     
     for attempt in range(max_retries):
         try:
-            # Log candidate being processed
             candidate_name = candidate_profile.get('Candidate Name', 'Unknown')
             logging.info(f"Processing {candidate_name} (Attempt {attempt+1}/{max_retries})")
             
-            # API call with timeout
-            response = client.chat.completions.create(
-                model="gpt-4o",  # Verify this matches your Azure deployment name
-                messages=[{"role": "system", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=0.1,
-                timeout=10  # Add timeout
-            )
-            
-            # Clean and validate response
-            raw_content = response.choices[0].message.content
+            raw_content = gemini_completion(prompt)
             cleaned_content = raw_content.strip("` \n")
-            
-            # Parse and validate JSON
             result = json.loads(cleaned_content)
             required_keys = ["persona_match_percentage", "p1_matched", "p1_missing", "p2_match_percentage"]
             if not all(key in result for key in required_keys):
                 missing = [k for k in required_keys if k not in result]
                 raise ValueError(f"Missing keys: {missing}")
             
-            # Calculate health status
-            result["profile_health"] = "High"  # Default
+            result["profile_health"] = "High"
             if result["persona_match_percentage"] < 100:
                 result["profile_health"] = "Low"
             elif p1_keywords and result["p1_missing"]:
@@ -171,7 +152,7 @@ def summarize_candidate(client, candidate_profile, summary_of_persona, max_retri
     logging.error(f"Max retries reached for {candidate_name}")
     return {"error": "Max retries reached", "candidate": candidate_name}, "Error"
 
-def process_csv_in_batches(client, df, summary_of_persona, batch_size=20):
+def process_csv_in_batches(df, summary_of_persona, batch_size=20):
     df['Profile Categorization'] = None
     df['Profile Health'] = None
     
@@ -182,32 +163,24 @@ def process_csv_in_batches(client, df, summary_of_persona, batch_size=20):
     for batch_num in range((total_rows // batch_size) + 1):
         batch_start = batch_num * batch_size
         batch_end = min((batch_num + 1) * batch_size, total_rows)
-        print(batch_num,)
         for index in range(batch_start, batch_end):
             try:
                 candidate_profile = df.iloc[index].to_dict()
-                
-                summary, health = summarize_candidate(client, candidate_profile, summary_of_persona)
-                
-                # Store as JSON string for CSV compatibility
+                summary, health = summarize_candidate(candidate_profile, summary_of_persona)
                 df.at[index, 'Profile Categorization'] = json.dumps(summary, ensure_ascii=False)
                 df.at[index, 'Profile Health'] = health
                 processed_count += 1
-                
             except Exception as e:
                 logging.error(f"Error processing row {index}: {str(e)}")
                 df.at[index, 'Profile Health'] = "Error"
-            
-            # Update progress after each candidate
             progress_bar.progress(processed_count / total_rows)
     
     return df
 
 def main():
     st.title("Talent Acquisition & Candidate Profiling Tool")
-    client = initialize_openai_client(api_key)
     
-    # Job Persona Configuration
+    # No need to initialize an OpenAI client for Gemini.
     with st.expander("Job Persona Configuration", expanded=True):
         persona_of_job = st.text_area(
             "Job Description",
@@ -218,24 +191,16 @@ def main():
         col1, col2 = st.columns(2)
         
         with col1:
-            p1_keywords = st.text_input(
-                "Primary Skills (P1 - Optional)",
-                placeholder="Comma-separated core skills"
-            )
+            p1_keywords = st.text_input("Primary Skills (P1 - Optional)", placeholder="Comma-separated core skills")
         with col2:
-            p2_keywords = st.text_input(
-                "Secondary Skills (P2 - Optional)",
-                placeholder="Comma-separated nice-to-have skills"
-            )
+            p2_keywords = st.text_input("Secondary Skills (P2 - Optional)", placeholder="Comma-separated nice-to-have skills")
         
-        # Add a button to process the persona
         if st.button("Process Persona", key="process_persona"):
             if persona_of_job:
                 with st.spinner("Analyzing job description..."):
                     p1_list = [kw.strip() for kw in p1_keywords.split(",") if kw.strip()] if p1_keywords else []
                     p2_list = [kw.strip() for kw in p2_keywords.split(",") if kw.strip()] if p2_keywords else []
-                    
-                    persona = summarize_persona(client, persona_of_job, p1_list, p2_list)
+                    persona = summarize_persona(persona_of_job, p1_list, p2_list)
                     st.session_state.persona = persona
                     st.subheader("Generated Persona")
                     st.json(persona)
@@ -243,7 +208,6 @@ def main():
             else:
                 st.error("Please provide a job description to process the persona.")
     
-    # Candidate Processing Section
     uploaded_file = st.file_uploader("Upload Candidate Profiles (CSV)", type=["csv"])
     
     if uploaded_file:
@@ -255,9 +219,8 @@ def main():
             st.warning("Please process the job persona first.")
         elif st.button("Start Processing Candidates", key="process_candidates"):
             with st.spinner("Processing candidates..."):
-                processed_df = process_csv_in_batches(client, df, st.session_state.persona)
+                processed_df = process_csv_in_batches(df, st.session_state.persona)
                 st.success(f"Processed {len(processed_df)} candidates!")
-                
                 csv = processed_df.to_csv(index=False).encode()
                 st.download_button(
                     "Download Full Results",
@@ -265,5 +228,6 @@ def main():
                     file_name="processed_candidates.csv",
                     mime="text/csv"
                 )
+
 if __name__ == "__main__":
     main()
